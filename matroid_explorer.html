@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Graphic Matroid Explorer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f8f8f6; color: #1a1a1a;
+    display: flex; justify-content: center; padding: 24px 16px;
+  }
+  #root { max-width: 760px; width: 100%; }
+  button {
+    background: transparent; border: 1px solid #b4b2a9; border-radius: 8px;
+    padding: 6px 14px; font-size: 13px; cursor: pointer; font-family: inherit; color: #1a1a1a;
+    transition: background 0.15s;
+  }
+  button:hover { background: #eee; }
+  button:active { transform: scale(0.98); }
+  input[type="text"], input[type="number"] {
+    border: 1px solid #d3d1c7; border-radius: 8px; padding: 6px 10px;
+    font-family: inherit; font-size: 14px; outline: none; background: #fff;
+    transition: border-color 0.15s;
+  }
+  input[type="text"]:focus, input[type="number"]:focus { border-color: #888; }
+  h1 { font-size: 20px; font-weight: 500; margin-bottom: 20px; color: #1a1a1a; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const e = React.createElement;
+const { useState, useCallback, useMemo, useEffect } = React;
+
+const VERTICES = [
+  { id: 0, label: "1", x: 100, y: 50 },
+  { id: 1, label: "2", x: 310, y: 50 },
+  { id: 2, label: "3", x: 310, y: 260 },
+  { id: 3, label: "4", x: 100, y: 260 },
+];
+
+const EDGES = [
+  { id: 0, label: "a", u: 0, v: 1 },
+  { id: 1, label: "b", u: 1, v: 2 },
+  { id: 2, label: "c", u: 2, v: 3 },
+  { id: 3, label: "e", u: 0, v: 2 },
+];
+
+const N = VERTICES.length;
+
+function findP(p, i) { while (p[i] !== i) { p[i] = p[p[i]]; i = p[i]; } return i; }
+
+function isAcyclic(eids) {
+  const p = Array.from({ length: N }, (_, i) => i), r = new Array(N).fill(0);
+  for (const eid of eids) {
+    const edge = EDGES[eid], ra = findP(p, edge.u), rb = findP(p, edge.v);
+    if (ra === rb) return false;
+    if (r[ra] < r[rb]) p[ra] = rb;
+    else if (r[ra] > r[rb]) p[rb] = ra;
+    else { p[rb] = ra; r[ra]++; }
+  }
+  return true;
+}
+
+const ALL_INDEP = (() => {
+  const out = [];
+  for (let m = 0; m < (1 << EDGES.length); m++) {
+    const ids = [];
+    for (let j = 0; j < EDGES.length; j++) if (m & (1 << j)) ids.push(j);
+    if (isAcyclic(ids)) out.push(ids);
+  }
+  return out;
+})();
+
+function sk(ids) { return [...ids].sort().join(","); }
+function fmt(ids) { return ids.length === 0 ? "\u2205" : "{ " + ids.map(i => EDGES[i].label).join(", ") + " }"; }
+
+function missingSubsets(ids, found) {
+  const out = [];
+  for (let m = 0; m < (1 << ids.length); m++) {
+    if (m === (1 << ids.length) - 1) continue;
+    const sub = [];
+    for (let j = 0; j < ids.length; j++) if (m & (1 << j)) sub.push(ids[j]);
+    if (!found.has(sk(sub))) out.push(sub);
+  }
+  return out;
+}
+
+const TC = { bg: "#E1F5EE", s: "#0F6E56", m: "#1D9E75", d: "#085041", b: "#5DCAA5" };
+const RC = { bg: "#FCEBEB", s: "#A32D2D", d: "#791F1F" };
+const AC = { bg: "#FAEEDA", s: "#854F0B", d: "#633806", b: "#EF9F27" };
+const PC = { bg: "#EEEDFE", s: "#534AB7", d: "#3C3489", b: "#AFA9EC" };
+
+function MatroidExplorer() {
+  const [sel, setSel] = useState(new Set());
+  const [found, setFound] = useState(new Set([""]));
+  const [msg, setMsg] = useState(null);
+  const [stage, setStage] = useState(1);
+
+  const [heredInput, setHeredInput] = useState({ superset: "", subset: "" });
+  const [heredResult, setHeredResult] = useState(null);
+  const [heredPhase, setHeredPhase] = useState("input");
+  const [heredParsed, setHeredParsed] = useState({ sup: null, sub: null });
+
+  const [exchInput, setExchInput] = useState({ smaller: "", larger: "", element: "" });
+  const [exchResult, setExchResult] = useState(null);
+  const [exchPhase, setExchPhase] = useState("input");
+  const [exchAugSet, setExchAugSet] = useState(null);
+  const [exchParsed, setExchParsed] = useState({ sm: null, lg: null, el: "" });
+
+  const [rankInput, setRankInput] = useState("");
+  const [rankResult, setRankResult] = useState(null);
+  const [completed, setCompleted] = useState(false);
+
+  const selArr = useMemo(() => [...sel].sort(), [sel]);
+  const curKey = useMemo(() => sk(selArr), [selArr]);
+  const acyc = useMemo(() => isAcyclic(selArr), [selArr]);
+
+  const foundList = useMemo(() => {
+    return [...found].map(k => k === "" ? [] : k.split(",").map(Number)).sort((a, b) => {
+      if (a.length !== b.length) return a.length - b.length;
+      for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) return a[i] - b[i]; }
+      return 0;
+    });
+  }, [found]);
+
+  const toggle = useCallback((eid) => {
+    if (stage !== 1) return;
+    setMsg(null);
+    setSel(prev => { const n = new Set(prev); if (n.has(eid)) n.delete(eid); else n.add(eid); return n; });
+  }, [stage]);
+
+  const clear = useCallback(() => { setSel(new Set()); setMsg(null); }, []);
+
+  const addToFamily = useCallback(() => {
+    if (found.has(curKey)) { setMsg({ t: "info", text: fmt(selArr) + " is already in \u2111." }); return; }
+    if (!acyc) { setMsg({ t: "error", text: fmt(selArr) + " contains a cycle \u2014 not independent!" }); return; }
+    const miss = missingSubsets(selArr, found);
+    if (miss.length > 0) {
+      const ex = miss.slice(0, 3).map(s => fmt(s)).join(", ");
+      setMsg({ t: "hered", text: "Hereditary property: add all subsets of " + fmt(selArr) + " first. Missing: " + ex + (miss.length > 3 ? ", \u2026" : "") });
+      return;
+    }
+    const next = new Set(found);
+    next.add(curKey);
+    setFound(next);
+    setMsg({ t: "ok", text: fmt(selArr) + " added to \u2111!" });
+    if (next.size === ALL_INDEP.length) {
+      setTimeout(() => setStage(2), 800);
+    }
+  }, [selArr, curKey, acyc, found]);
+
+  const parseSet = (str) => {
+    const cleaned = str.replace(/[{}]/g, "").trim();
+    if (cleaned === "" || cleaned === "\u2205") return [];
+    const labels = cleaned.split(/[\s,]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+    const ids = labels.map(l => EDGES.findIndex(edge => edge.label === l));
+    if (ids.some(i => i === -1)) return null;
+    return [...new Set(ids)].sort();
+  };
+
+  const heredHints = {
+    parse: "Could not parse \u2014 use edge labels like: a, b or { a, b }",
+    notinI: "That set is not in \u2111.",
+    notsmaller: "T must be a proper subset of S (smaller size).",
+    notsubset: "T is not a subset of S.",
+    subnotinI: "That subset is not in \u2111.",
+  };
+
+  const checkHered = useCallback(() => {
+    const sup = parseSet(heredInput.superset);
+    const sub = parseSet(heredInput.subset);
+    if (!sup || !sub) { setHeredResult("parse"); return; }
+    if (!found.has(sk(sup))) { setHeredResult("notinI"); return; }
+    if (sub.length >= sup.length) { setHeredResult("notsmaller"); return; }
+    if (!sub.every(x => sup.includes(x))) { setHeredResult("notsubset"); return; }
+    if (!found.has(sk(sub))) { setHeredResult("subnotinI"); return; }
+    setHeredResult(null);
+    setHeredParsed({ sup, sub });
+    setHeredPhase("confirm");
+  }, [heredInput, found]);
+
+  const confirmHered = useCallback((answer) => {
+    if (answer === "yes") setHeredPhase("done");
+    else setHeredResult("wrong_confirm");
+  }, []);
+
+  const exchHints = {
+    parse: "Could not parse \u2014 use edge labels like: a, b and a single edge label.",
+    notinI: "One of those sets is not in \u2111.",
+    notsmaller: "A must be properly smaller than B.",
+    notinlarger: "That element is not in B.",
+    alreadyin: "That element is already in A.",
+    cycle: "Adding that element creates a cycle \u2014 try another.",
+  };
+
+  const checkExch = useCallback(() => {
+    const sm = parseSet(exchInput.smaller);
+    const lg = parseSet(exchInput.larger);
+    const el = exchInput.element.trim().toLowerCase();
+    const eidx = EDGES.findIndex(edge => edge.label === el);
+    if (!sm || !lg || eidx === -1) { setExchResult("parse"); return; }
+    if (!found.has(sk(sm)) || !found.has(sk(lg))) { setExchResult("notinI"); return; }
+    if (sm.length >= lg.length) { setExchResult("notsmaller"); return; }
+    if (!lg.includes(eidx)) { setExchResult("notinlarger"); return; }
+    if (sm.includes(eidx)) { setExchResult("alreadyin"); return; }
+    const aug = [...sm, eidx].sort();
+    if (!isAcyclic(aug)) { setExchResult("cycle"); return; }
+    setExchAugSet(aug);
+    setExchParsed({ sm, lg, el });
+    setExchResult(null);
+    setExchPhase("confirm");
+  }, [exchInput, found]);
+
+  const confirmExch = useCallback((answer) => {
+    if (answer === "yes") setExchPhase("done");
+    else setExchResult("wrong_confirm");
+  }, []);
+
+  const bothDone = heredPhase === "done" && exchPhase === "done";
+  useEffect(() => {
+    if (bothDone && stage === 2) {
+      const timer = setTimeout(() => setStage(3), 600);
+      return () => clearTimeout(timer);
+    }
+  }, [bothDone, stage]);
+
+  const checkRank = useCallback(() => {
+    if (parseInt(rankInput) === N - 1) { setRankResult("correct"); setCompleted(true); }
+    else setRankResult("wrong");
+  }, [rankInput]);
+
+  const eMid = (edge) => ({ x: (VERTICES[edge.u].x + VERTICES[edge.v].x) / 2, y: (VERTICES[edge.u].y + VERTICES[edge.v].y) / 2 });
+  const eOff = (edge) => {
+    const dx = VERTICES[edge.v].x - VERTICES[edge.u].x, dy = VERTICES[edge.v].y - VERTICES[edge.u].y;
+    const l = Math.sqrt(dx * dx + dy * dy);
+    return { x: (-dy / l) * 18, y: (dx / l) * 18 };
+  };
+
+  const stageLabel = stage === 1 ? "Stage 1: Build \u2111" : stage === 2 ? "Stage 2: Verify properties" : "Stage 3: Rank & basis";
+  const stageColor = stage === 1 ? TC : stage === 2 ? PC : AC;
+
+  // Build the SVG children
+  const svgChildren = [];
+
+  // Edge lines and clickable dots
+  EDGES.forEach((edge) => {
+    const v1 = VERTICES[edge.u], v2 = VERTICES[edge.v];
+    const isSel = sel.has(edge.id);
+    const isCyc = isSel && !acyc;
+    const mid = eMid(edge), off = eOff(edge);
+    let stroke = "#B4B2A9", sw = 2.5;
+    if (stage !== 1) { stroke = "#888780"; sw = 2; }
+    else if (isSel && isCyc) { stroke = RC.s; sw = 3.5; }
+    else if (isSel) { stroke = TC.s; sw = 3.5; }
+
+    svgChildren.push(
+      e("g", { key: "e" + edge.id, onClick: () => toggle(edge.id), style: { cursor: stage === 1 ? "pointer" : "default" } },
+        e("line", { x1: v1.x, y1: v1.y, x2: v2.x, y2: v2.y, stroke, strokeWidth: sw, strokeLinecap: "round" }),
+        e("line", { x1: v1.x, y1: v1.y, x2: v2.x, y2: v2.y, stroke: "transparent", strokeWidth: 22 }),
+        e("circle", { cx: mid.x + off.x, cy: mid.y + off.y, r: 13,
+          fill: stage === 1 && isSel ? (isCyc ? RC.bg : TC.bg) : "#f1efe8",
+          stroke: stage === 1 && isSel ? (isCyc ? RC.s : TC.b) : "#d3d1c7", strokeWidth: 0.5 }),
+        e("text", { x: mid.x + off.x, y: mid.y + off.y + 1, textAnchor: "middle", dominantBaseline: "central",
+          fontSize: 14, fontWeight: 500, fontStyle: "italic",
+          fill: stage === 1 && isSel ? (isCyc ? RC.d : TC.d) : "#888780" }, edge.label)
+      )
+    );
+  });
+
+  // Edge labels on opposite side
+  EDGES.forEach((edge) => {
+    const v1 = VERTICES[edge.u], v2 = VERTICES[edge.v];
+    const mx = (v1.x + v2.x) / 2, my = (v1.y + v2.y) / 2;
+    const dx = v2.x - v1.x, dy = v2.y - v1.y;
+    const l = Math.sqrt(dx * dx + dy * dy);
+    const ox = (dy / l) * 18, oy = (-dx / l) * 18;
+    svgChildren.push(
+      e("text", { key: "lbl" + edge.id, x: mx + ox, y: my + oy + 1,
+        textAnchor: "middle", dominantBaseline: "central",
+        fontSize: 13, fontWeight: 500, fontStyle: "italic",
+        fill: "#888780", style: { pointerEvents: "none" } }, edge.label)
+    );
+  });
+
+  // Vertices
+  VERTICES.forEach((v) => {
+    svgChildren.push(
+      e("g", { key: "v" + v.id },
+        e("circle", { cx: v.x, cy: v.y, r: 22, fill: "#fff", stroke: "#888", strokeWidth: 1.5 }),
+        e("text", { x: v.x, y: v.y + 1, textAnchor: "middle", dominantBaseline: "central",
+          fontSize: 17, fontWeight: 500, fill: "#1a1a1a" }, v.label)
+      )
+    );
+  });
+
+  const msgColors = {
+    ok: { bg: TC.bg, c: TC.d, bd: TC.b },
+    error: { bg: RC.bg, c: RC.d, bd: RC.s },
+    hered: { bg: AC.bg, c: AC.d, bd: AC.b },
+    info: { bg: "#f1efe8", c: "#1a1a1a", bd: "#d3d1c7" },
+  };
+
+  // Family pills
+  const familyPills = foundList.map((s, i) =>
+    e("span", { key: i, style: {
+      fontSize: 12, fontStyle: "italic", padding: "2px 8px",
+      borderRadius: 8, background: TC.bg, color: TC.d, whiteSpace: "nowrap",
+      display: "inline-block",
+    } }, fmt(s))
+  );
+
+  // Build right panel children
+  const rightChildren = [];
+
+  // Progress
+  rightChildren.push(
+    e("div", { key: "prog", style: { background: "#f1efe8", borderRadius: 8, padding: "10px 14px", marginBottom: 12 } },
+      e("div", { style: { fontSize: 12, color: "#888", marginBottom: 2 } }, "Independent sets found"),
+      e("div", { style: { fontSize: 24, fontWeight: 500 } },
+        found.size, " ",
+        e("span", { style: { fontSize: 14, fontWeight: 400, color: "#888" } }, "/ " + ALL_INDEP.length)
+      ),
+      e("div", { style: { marginTop: 6, height: 4, borderRadius: 2, background: "#d3d1c7", overflow: "hidden" } },
+        e("div", { style: { height: "100%", borderRadius: 2,
+          width: Math.round((found.size / ALL_INDEP.length) * 100) + "%",
+          background: TC.m, transition: "width 0.3s ease" } })
+      )
+    )
+  );
+
+  // Family list
+  rightChildren.push(
+    e("div", { key: "fam", style: {
+      background: "#fff", border: "1px solid #d3d1c7", borderRadius: 12,
+      padding: "12px 14px", maxHeight: 260, overflowY: "auto",
+    } },
+      e("div", { style: { fontSize: 13, fontWeight: 500, marginBottom: 8 } }, "Family \u2111"),
+      e("div", { style: { display: "flex", flexWrap: "wrap", gap: "4px" } }, ...familyPills)
+    )
+  );
+
+  // Stage 2: Hereditary
+  if (stage >= 2) {
+    const heredChildren = [];
+    heredChildren.push(e("div", { key: "ht", style: { fontSize: 14, fontWeight: 500, color: PC.d, marginBottom: 10 } }, "Hereditary property"));
+
+    if (heredPhase === "input") {
+      heredChildren.push(
+        e("div", { key: "hd", style: { fontSize: 13, color: PC.d, lineHeight: 1.6, marginBottom: 10 } },
+          "Give a set S \u2208 \u2111 and a proper subset T \u2282 S."),
+        e("div", { key: "hf", style: { display: "flex", flexDirection: "column", gap: "6px" } },
+          e("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+            e("label", { style: { fontSize: 13, color: PC.d, width: 26, fontStyle: "italic" } }, "S ="),
+            e("input", { type: "text", value: heredInput.superset, placeholder: "e.g. a, b", style: { flex: 1, fontSize: 14, fontStyle: "italic" },
+              onChange: (ev) => { setHeredInput(p => ({ ...p, superset: ev.target.value })); setHeredResult(null); } })
+          ),
+          e("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+            e("label", { style: { fontSize: 13, color: PC.d, width: 26, fontStyle: "italic" } }, "T ="),
+            e("input", { type: "text", value: heredInput.subset, placeholder: "e.g. a", style: { flex: 1, fontSize: 14, fontStyle: "italic" },
+              onChange: (ev) => { setHeredInput(p => ({ ...p, subset: ev.target.value })); setHeredResult(null); } })
+          ),
+          e("button", { key: "hb", onClick: checkHered, style: {
+            fontSize: 13, background: PC.bg, color: PC.d, border: "1px solid " + PC.b,
+            borderRadius: 8, padding: "6px 14px", cursor: "pointer", marginTop: 4,
+          } }, "Check")
+        )
+      );
+      if (heredResult && heredResult !== "wrong_confirm") {
+        heredChildren.push(e("div", { key: "he", style: { fontSize: 12, color: RC.s, marginTop: 6 } }, heredHints[heredResult]));
+      }
+    }
+
+    if (heredPhase === "confirm" && heredParsed.sub) {
+      heredChildren.push(
+        e("div", { key: "hc" },
+          e("div", { style: { fontSize: 13, color: PC.d, lineHeight: 1.7, marginBottom: 10 } },
+            "You chose S = " + fmt(heredParsed.sup) + " and T = " + fmt(heredParsed.sub) + "."),
+          e("div", { style: { fontSize: 13, color: PC.d, lineHeight: 1.7, marginBottom: 10, fontWeight: 500 } },
+            "Is T = " + fmt(heredParsed.sub) + " \u2208 \u2111?"),
+          e("div", { style: { display: "flex", gap: "8px" } },
+            e("button", { onClick: () => confirmHered("yes"), style: {
+              fontSize: 13, background: PC.bg, color: PC.d, border: "1px solid " + PC.b,
+              borderRadius: 8, padding: "6px 18px", cursor: "pointer",
+            } }, "Yes"),
+            e("button", { onClick: () => confirmHered("no"), style: {
+              fontSize: 13, background: PC.bg, color: PC.d, border: "1px solid " + PC.b,
+              borderRadius: 8, padding: "6px 18px", cursor: "pointer",
+            } }, "No")
+          ),
+          heredResult === "wrong_confirm" ? e("div", { style: { fontSize: 12, color: RC.s, marginTop: 6 } },
+            "Look at your family \u2111 again \u2014 is " + fmt(heredParsed.sub) + " in the list?") : null
+        )
+      );
+    }
+
+    if (heredPhase === "done" && heredParsed.sub) {
+      heredChildren.push(
+        e("div", { key: "hdn", style: {
+          fontSize: 13, color: TC.d, background: TC.bg, padding: "10px 12px",
+          borderRadius: 8, lineHeight: 1.6, border: "1px solid " + TC.b,
+        } }, "Correct! T = " + fmt(heredParsed.sub) + " \u2208 \u2111. Since T \u2282 S and both are in \u2111, you've demonstrated the hereditary property: every subset of an independent set is independent.")
+      );
+    }
+
+    rightChildren.push(
+      e("div", { key: "hered", style: { marginTop: 16, padding: "14px", background: PC.bg, border: "1px solid " + PC.b, borderRadius: 12 } }, ...heredChildren)
+    );
+  }
+
+  // Stage 2: Exchange
+  if (stage >= 2) {
+    const exchChildren = [];
+    exchChildren.push(e("div", { key: "et", style: { fontSize: 14, fontWeight: 500, color: PC.d, marginBottom: 10 } }, "Exchange property"));
+
+    if (exchPhase === "input") {
+      exchChildren.push(
+        e("div", { key: "ed", style: { fontSize: 13, color: PC.d, lineHeight: 1.6, marginBottom: 10 } },
+          "Give A, B \u2208 \u2111 with |A| < |B|, and an element x \u2208 B \\ A such that A \u222A {x} is independent."),
+        e("div", { key: "ef", style: { display: "flex", flexDirection: "column", gap: "6px" } },
+          e("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+            e("label", { style: { fontSize: 13, color: PC.d, width: 26, fontStyle: "italic" } }, "A ="),
+            e("input", { type: "text", value: exchInput.smaller, placeholder: "e.g. a", style: { flex: 1, fontSize: 14, fontStyle: "italic" },
+              onChange: (ev) => { setExchInput(p => ({ ...p, smaller: ev.target.value })); setExchResult(null); } })
+          ),
+          e("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+            e("label", { style: { fontSize: 13, color: PC.d, width: 26, fontStyle: "italic" } }, "B ="),
+            e("input", { type: "text", value: exchInput.larger, placeholder: "e.g. a, b", style: { flex: 1, fontSize: 14, fontStyle: "italic" },
+              onChange: (ev) => { setExchInput(p => ({ ...p, larger: ev.target.value })); setExchResult(null); } })
+          ),
+          e("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+            e("label", { style: { fontSize: 13, color: PC.d, width: 26, fontStyle: "italic" } }, "x ="),
+            e("input", { type: "text", value: exchInput.element, placeholder: "e.g. b", style: { flex: 1, fontSize: 14, fontStyle: "italic" },
+              onChange: (ev) => { setExchInput(p => ({ ...p, element: ev.target.value })); setExchResult(null); } })
+          ),
+          e("button", { key: "eb", onClick: checkExch, style: {
+            fontSize: 13, background: PC.bg, color: PC.d, border: "1px solid " + PC.b,
+            borderRadius: 8, padding: "6px 14px", cursor: "pointer", marginTop: 4,
+          } }, "Check")
+        )
+      );
+      if (exchResult && exchResult !== "wrong_confirm") {
+        exchChildren.push(e("div", { key: "ee", style: { fontSize: 12, color: RC.s, marginTop: 6 } }, exchHints[exchResult]));
+      }
+    }
+
+    if (exchPhase === "confirm" && exchAugSet) {
+      exchChildren.push(
+        e("div", { key: "ec" },
+          e("div", { style: { fontSize: 13, color: PC.d, lineHeight: 1.7, marginBottom: 10 } },
+            "You chose A = " + fmt(exchParsed.sm) + ", B = " + fmt(exchParsed.lg) + ", and x = " + exchParsed.el + "."),
+          e("div", { style: { fontSize: 13, color: PC.d, lineHeight: 1.7, marginBottom: 10 } },
+            "So A \u222A {" + exchParsed.el + "} = " + fmt(exchAugSet) + "."),
+          e("div", { style: { fontSize: 13, color: PC.d, lineHeight: 1.7, marginBottom: 10, fontWeight: 500 } },
+            "Is " + fmt(exchAugSet) + " \u2208 \u2111?"),
+          e("div", { style: { display: "flex", gap: "8px" } },
+            e("button", { onClick: () => confirmExch("yes"), style: {
+              fontSize: 13, background: PC.bg, color: PC.d, border: "1px solid " + PC.b,
+              borderRadius: 8, padding: "6px 18px", cursor: "pointer",
+            } }, "Yes"),
+            e("button", { onClick: () => confirmExch("no"), style: {
+              fontSize: 13, background: PC.bg, color: PC.d, border: "1px solid " + PC.b,
+              borderRadius: 8, padding: "6px 18px", cursor: "pointer",
+            } }, "No")
+          ),
+          exchResult === "wrong_confirm" ? e("div", { style: { fontSize: 12, color: RC.s, marginTop: 6 } },
+            "Look at your family \u2111 \u2014 is " + fmt(exchAugSet) + " in the list?") : null
+        )
+      );
+    }
+
+    if (exchPhase === "done" && exchAugSet) {
+      exchChildren.push(
+        e("div", { key: "edn", style: {
+          fontSize: 13, color: TC.d, background: TC.bg, padding: "10px 12px",
+          borderRadius: 8, lineHeight: 1.6, border: "1px solid " + TC.b,
+        } }, "Correct! " + fmt(exchAugSet) + " \u2208 \u2111. You found an element from the larger set that augments the smaller one while preserving independence \u2014 that's the exchange property.")
+      );
+    }
+
+    rightChildren.push(
+      e("div", { key: "exch", style: { marginTop: 12, padding: "14px", background: PC.bg, border: "1px solid " + PC.b, borderRadius: 12 } }, ...exchChildren)
+    );
+  }
+
+  // Stage 3: Rank
+  if (stage >= 3) {
+    rightChildren.push(
+      e("div", { key: "rank", style: { marginTop: 16, padding: "14px", background: AC.bg, border: "1px solid " + AC.b, borderRadius: 12 } },
+        e("div", { style: { fontSize: 14, fontWeight: 500, color: AC.d, marginBottom: 8 } }, "Final challenge"),
+        e("div", { style: { fontSize: 13, color: AC.d, marginBottom: 10, lineHeight: 1.5 } }, "What is the rank of this matroid?"),
+        e("div", { style: { display: "flex", gap: "8px", alignItems: "center" } },
+          e("input", { type: "number", min: 0, max: 10, value: rankInput, placeholder: "?",
+            style: { width: 60, textAlign: "center", fontSize: 16 },
+            onChange: (ev) => { setRankInput(ev.target.value); setRankResult(null); } }),
+          e("button", { onClick: checkRank, style: {
+            fontSize: 13, background: AC.bg, color: AC.d, border: "1px solid " + AC.b,
+            borderRadius: 8, padding: "6px 14px", cursor: "pointer",
+          } }, "Check")
+        ),
+        rankResult === "wrong" ? e("div", { style: { fontSize: 13, color: RC.s, marginTop: 8 } },
+          "Not quite \u2014 look at the largest sets in \u2111.") : null
+      )
+    );
+  }
+
+  // Completed
+  if (completed) {
+    rightChildren.push(
+      e("div", { key: "done", style: {
+        marginTop: 16, padding: "16px", background: TC.bg, border: "1px solid " + TC.b,
+        borderRadius: 12, textAlign: "center",
+      } },
+        e("div", { style: { fontSize: 18, fontWeight: 500, color: TC.d } }, "Congratulations!"),
+        e("div", { style: { fontSize: 13, color: TC.s, marginTop: 6, lineHeight: 1.6 } },
+          "The rank is " + (N - 1) + ". Every basis (spanning tree) has exactly " + (N - 1) + " edges. You've built the graphic matroid M = (E, \u2111)!")
+      )
+    );
+  }
+
+  // Stage 1 controls
+  const leftControls = [];
+  if (stage === 1) {
+    leftControls.push(
+      e("div", { key: "btns", style: { display: "flex", gap: "8px", marginTop: "10px", alignItems: "center", flexWrap: "wrap" } },
+        e("button", { onClick: addToFamily, style: {
+          fontSize: 13, background: TC.bg, color: TC.d, border: "1px solid " + TC.b,
+          borderRadius: 8, padding: "7px 16px", cursor: "pointer", fontWeight: 500,
+        } }, "Add " + fmt(selArr) + " to \u2111"),
+        e("button", { onClick: clear, style: { fontSize: 13 } }, "Clear")
+      )
+    );
+    if (msg) {
+      const mc = msgColors[msg.t] || msgColors.info;
+      leftControls.push(
+        e("div", { key: "msg", style: {
+          marginTop: 12, padding: "10px 14px", borderRadius: 8, fontSize: 13, lineHeight: 1.6,
+          background: mc.bg, color: mc.c, border: "1px solid " + mc.bd,
+        } }, msg.text)
+      );
+    }
+  }
+
+  return e("div", { style: { padding: "1rem 0" } },
+    e("h1", null, "Graphic Matroid Explorer"),
+    e("div", { style: {
+      display: "inline-block", padding: "4px 14px", borderRadius: 8,
+      background: stageColor.bg, color: stageColor.d, fontSize: 13, fontWeight: 500, marginBottom: 16,
+      border: "1px solid " + (stageColor.b || stageColor.s),
+    } }, stageLabel),
+    e("div", { style: { display: "flex", gap: "24px", flexWrap: "wrap", alignItems: "flex-start" } },
+      e("div", { style: { flex: "0 0 auto", maxWidth: 400 } },
+        e("svg", { viewBox: "20 -10 370 330", style: { width: 400, maxWidth: "100%", display: "block" } }, ...svgChildren),
+        ...leftControls
+      ),
+      e("div", { style: { flex: "1 1 220px", minWidth: 220, maxWidth: 300 } }, ...rightChildren)
+    )
+  );
+}
+
+ReactDOM.render(e(MatroidExplorer), document.getElementById("root"));
+</script>
+</body>
+</html>
